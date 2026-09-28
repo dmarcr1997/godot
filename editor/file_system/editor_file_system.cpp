@@ -2312,7 +2312,10 @@ void EditorFileSystem::_process_update_pending() {
 	_update_script_classes();
 	// Parse documentation second, as it requires the class names to be loaded
 	// because _update_script_documentation loads the scripts completely.
-	if (!EditorNode::is_cmdline_mode()) {
+	// Both steps need the editor UI. A scan can finish after EditorNode is gone (seen with `--import`
+	// at shutdown), where is_cmdline_mode() reports false and the progress dialog would touch a freed
+	// editor, so skip them when there is no EditorNode.
+	if (EditorNode::get_singleton() && !EditorNode::is_cmdline_mode()) {
 		_update_script_documentation();
 		_update_pending_scene_groups();
 	}
