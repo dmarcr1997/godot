@@ -117,6 +117,7 @@ JPH::JobHandle JoltJobSystem::CreateJob(const char *p_name, JPH::ColorArg p_colo
 
 		if (job_index != JPH::FixedSizeFreeList<Job>::cInvalidObjectIndex) {
 			job = &jobs.Get(job_index);
+			live_jobs.fetch_add(1, std::memory_order_relaxed);
 			break;
 		}
 
@@ -154,6 +155,7 @@ void JoltJobSystem::FreeJob(JPH::JobSystem::Job *p_job) {
 void JoltJobSystem::_reclaim_jobs() {
 	while (Job *job = Job::pop_completed()) {
 		jobs.DestructObject(job);
+		live_jobs.fetch_sub(1, std::memory_order_release);
 	}
 }
 
@@ -161,6 +163,18 @@ JoltJobSystem::JoltJobSystem() :
 		JPH::JobSystemWithBarrier(JPH::cMaxPhysicsBarriers),
 		thread_count(MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())) {
 	jobs.Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsJobs);
+}
+
+JoltJobSystem::~JoltJobSystem() {
+	// A job releases itself on its worker thread after the step's barrier has already returned, so the
+	// last step can finish with jobs that post_step() never saw. Reclaim them before `jobs` is destroyed,
+	// otherwise they leak and Jolt's free list asserts at shutdown (intermittently, depending on timing).
+	while (live_jobs.load(std::memory_order_acquire) > 0) {
+		_reclaim_jobs();
+		if (live_jobs.load(std::memory_order_acquire) > 0) {
+			OS::get_singleton()->delay_usec(10);
+		}
+	}
 }
 
 void JoltJobSystem::pre_step() {

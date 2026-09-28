@@ -80,6 +80,9 @@ class JoltJobSystem final : public JPH::JobSystemWithBarrier {
 
 	JPH::FixedSizeFreeList<Job> jobs;
 
+	// Jobs constructed but not yet reclaimed. See the destructor.
+	std::atomic<uint32_t> live_jobs = 0;
+
 	int thread_count = 0;
 
 	virtual int GetMaxConcurrency() const override;
@@ -93,6 +96,7 @@ class JoltJobSystem final : public JPH::JobSystemWithBarrier {
 
 public:
 	JoltJobSystem();
+	~JoltJobSystem();
 
 	void pre_step();
 	void post_step();
