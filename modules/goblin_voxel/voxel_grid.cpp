@@ -421,12 +421,40 @@ PackedVector3Array GKVoxelGrid::build_collision_faces() const {
 	return faces;
 }
 
-TypedArray<AABB> GKVoxelGrid::build_boxes() const {
+Dictionary GKVoxelGrid::remove_below(const Plane &p_plane, int p_max_hardness, const PackedByteArray &p_hardness) {
+	int counts[256] = {};
+	uint8_t *w = cells.ptrw();
+	for (int z = 0; z < size.z; z++) {
+		for (int y = 0; y < size.y; y++) {
+			for (int x = 0; x < size.x; x++) {
+				uint8_t &cell = w[_index(x, y, z)];
+				if (cell == 0 || p_plane.distance_to(voxel_center(Vector3i(x, y, z))) >= 0) {
+					continue;
+				}
+				const int hardness = cell < p_hardness.size() ? p_hardness[cell] : 0;
+				if (hardness <= p_max_hardness) {
+					counts[cell]++;
+					cell = 0;
+				}
+			}
+		}
+	}
+	Dictionary out;
+	for (int m = 1; m < 256; m++) {
+		if (counts[m] > 0) {
+			out[m] = counts[m];
+		}
+	}
+	return out;
+}
+
+TypedArray<AABB> GKVoxelGrid::build_boxes(const PackedByteArray &p_solid) const {
 	TypedArray<AABB> out;
 	LocalVector<uint8_t> used;
 	used.resize(cells.size());
 	for (uint32_t i = 0; i < used.size(); i++) {
-		used[i] = cells[i] == 0;
+		const uint8_t m = cells[i];
+		used[i] = m == 0 || (m < p_solid.size() && p_solid[m] == 0);
 	}
 	auto free_at = [&](int x, int y, int z) { return !used[_index(x, y, z)]; };
 	for (int y = 0; y < size.y; y++) {
@@ -544,7 +572,8 @@ void GKVoxelGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("mass_properties", "density"), &GKVoxelGrid::mass_properties);
 	ClassDB::bind_method(D_METHOD("build_mesh", "colors"), &GKVoxelGrid::build_mesh);
 	ClassDB::bind_method(D_METHOD("build_collision_faces"), &GKVoxelGrid::build_collision_faces);
-	ClassDB::bind_method(D_METHOD("build_boxes"), &GKVoxelGrid::build_boxes);
+	ClassDB::bind_method(D_METHOD("build_boxes", "solid"), &GKVoxelGrid::build_boxes, DEFVAL(PackedByteArray()));
+	ClassDB::bind_method(D_METHOD("remove_below", "plane", "max_hardness", "hardness"), &GKVoxelGrid::remove_below);
 	ClassDB::bind_method(D_METHOD("to_text"), &GKVoxelGrid::to_text);
 	ClassDB::bind_method(D_METHOD("from_text", "text"), &GKVoxelGrid::from_text);
 }

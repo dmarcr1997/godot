@@ -81,7 +81,11 @@ public:
 	// Surface triangles for a ConcavePolygonShape3D (static objects).
 	PackedVector3Array build_collision_faces() const;
 	// Solid space as few boxes as greedily found (for moving pieces, which can't use concave shapes).
-	TypedArray<AABB> build_boxes() const;
+	// With p_solid (a flag per material), materials flagged 0 (leaves) get no boxes.
+	TypedArray<AABB> build_boxes(const PackedByteArray &p_solid = PackedByteArray()) const;
+	// Removes voxels whose centres are below a grid-local plane (on its back side) and soft enough, as
+	// remove_sphere. For a piece landing: what sank into the ground is crushed.
+	Dictionary remove_below(const Plane &p_plane, int p_max_hardness, const PackedByteArray &p_hardness);
 
 	// Text save form: "sx sy sz voxel_size|count*material count*material ..." (runs, x fastest).
 	String to_text() const;
