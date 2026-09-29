@@ -223,6 +223,52 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor) {
 	return out;
 }
 
+Dictionary GKVoxelGrid::mass_properties(const PackedFloat32Array &p_density) const {
+	const real_t volume = voxel_size * voxel_size * voxel_size;
+	double mass = 0;
+	Vector3 moment;
+	// First pass: mass and centre.
+	for (int z = 0; z < size.z; z++) {
+		for (int y = 0; y < size.y; y++) {
+			for (int x = 0; x < size.x; x++) {
+				const uint8_t m = cells[_index(x, y, z)];
+				if (m == 0) {
+					continue;
+				}
+				const double mm = (m < p_density.size() ? p_density[m] : 0.0) * volume;
+				mass += mm;
+				moment += voxel_center(Vector3i(x, y, z)) * mm;
+			}
+		}
+	}
+	Dictionary out;
+	out["mass"] = mass;
+	out["center"] = mass > 0 ? moment / mass : Vector3();
+	out["inertia"] = Vector3();
+	if (mass <= 0) {
+		return out;
+	}
+	const Vector3 c = moment / mass;
+	// Second pass: inertia of each voxel as a point plus its own cube term (m * s^2 / 6 per axis).
+	Vector3 inertia;
+	const real_t cube = voxel_size * voxel_size / 6.0;
+	for (int z = 0; z < size.z; z++) {
+		for (int y = 0; y < size.y; y++) {
+			for (int x = 0; x < size.x; x++) {
+				const uint8_t m = cells[_index(x, y, z)];
+				if (m == 0) {
+					continue;
+				}
+				const real_t mm = (m < p_density.size() ? p_density[m] : 0.0) * volume;
+				const Vector3 d = voxel_center(Vector3i(x, y, z)) - c;
+				inertia += Vector3(d.y * d.y + d.z * d.z + cube, d.x * d.x + d.z * d.z + cube, d.x * d.x + d.y * d.y + cube) * mm;
+			}
+		}
+	}
+	out["inertia"] = inertia;
+	return out;
+}
+
 AABB GKVoxelGrid::get_solid_bounds() const {
 	Vector3i lo(INT32_MAX, INT32_MAX, INT32_MAX);
 	Vector3i hi(-1, -1, -1);
@@ -495,6 +541,7 @@ void GKVoxelGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("remove_sphere", "center", "radius", "max_hardness", "hardness"), &GKVoxelGrid::remove_sphere);
 	ClassDB::bind_method(D_METHOD("split_loose", "anchor_floor"), &GKVoxelGrid::split_loose);
 	ClassDB::bind_method(D_METHOD("get_solid_bounds"), &GKVoxelGrid::get_solid_bounds);
+	ClassDB::bind_method(D_METHOD("mass_properties", "density"), &GKVoxelGrid::mass_properties);
 	ClassDB::bind_method(D_METHOD("build_mesh", "colors"), &GKVoxelGrid::build_mesh);
 	ClassDB::bind_method(D_METHOD("build_collision_faces"), &GKVoxelGrid::build_collision_faces);
 	ClassDB::bind_method(D_METHOD("build_boxes"), &GKVoxelGrid::build_boxes);

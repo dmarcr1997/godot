@@ -69,6 +69,10 @@ public:
 	// are removed from this grid and returned as [{"grid": GKVoxelGrid (cropped), "offset": Vector3i}].
 	TypedArray<Dictionary> split_loose(bool p_anchor_floor);
 
+	// Mass, centre of mass and rotational inertia (diagonal, about the centre, grid axes) from a density
+	// per material in kg/m^3: {"mass": float, "center": Vector3, "inertia": Vector3}. Mass 0 when empty.
+	Dictionary mass_properties(const PackedFloat32Array &p_density) const;
+
 	// The lowest and highest solid voxel (min inclusive, max exclusive), or zeros if empty.
 	AABB get_solid_bounds() const;
 
