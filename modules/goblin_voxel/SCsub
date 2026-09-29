@@ -1,0 +1,12 @@
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
+
+Import("env")
+Import("env_modules")
+
+# Goblin Kitchen: voxel objects (trees, rocks, structures). See FORK_PATCHES.md.
+env_goblin_voxel = env_modules.Clone()
+
+module_obj = []
+env_goblin_voxel.add_source_files(module_obj, "*.cpp")
+env.modules_sources += module_obj
