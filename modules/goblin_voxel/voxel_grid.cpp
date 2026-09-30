@@ -141,6 +141,7 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor, const Packe
 	}
 	struct Part {
 		int voxels = 0;
+		int solid = 0;
 		bool on_floor = false;
 		Vector3i lo;
 		Vector3i hi;
@@ -201,6 +202,7 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor, const Packe
 			const int y = (i / size.x) % size.y;
 			const int z = i / (size.x * size.y);
 			part.voxels++;
+			part.solid += solid(i) ? 1 : 0;
 			part.on_floor = part.on_floor || y == 0;
 			part.lo = part.lo.min(Vector3i(x, y, z));
 			part.hi = part.hi.max(Vector3i(x, y, z));
@@ -222,9 +224,11 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor, const Packe
 	if (parts.size() == 0) {
 		return out;
 	}
+	// Without a floor, the part with the most that holds together (solid voxels) stays: a trunk, not the
+	// leafy crown that came off it.
 	int largest = 0;
 	for (uint32_t p = 1; p < parts.size(); p++) {
-		if (parts[p].voxels > parts[largest].voxels) {
+		if (parts[p].solid > parts[largest].solid || (parts[p].solid == parts[largest].solid && parts[p].voxels > parts[largest].voxels)) {
 			largest = p;
 		}
 	}
