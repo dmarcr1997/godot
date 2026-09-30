@@ -131,7 +131,7 @@ Dictionary GKVoxelGrid::remove_sphere(const Vector3 &p_center, real_t p_radius, 
 	return out;
 }
 
-TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor) {
+TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor, const PackedByteArray &p_solid) {
 	TypedArray<Dictionary> out;
 	const int total = cells.size();
 	LocalVector<int32_t> label;
@@ -148,8 +148,44 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor) {
 	LocalVector<Part> parts;
 	LocalVector<int32_t> stack;
 	const uint8_t *r = cells.ptr();
+	const bool masked = !p_solid.is_empty();
+	auto solid = [&](int i) { return r[i] != 0 && (!masked || r[i] >= p_solid.size() || p_solid[r[i]] != 0); };
+	static const int dirs6[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+	// Parts through solid voxels first (all voxels when unmasked).
+	for (int pass = 0; pass < 2; pass++) {
+	if (pass == 1) {
+		// Leaves go with the part they grow from: spread each part's label out through non-solid voxels,
+		// breadth first from every solid voxel at once.
+		LocalVector<int32_t> frontier;
+		for (int i = 0; i < total; i++) {
+			if (label[i] != -1) {
+				frontier.push_back(i);
+			}
+		}
+		for (uint32_t head = 0; head < frontier.size(); head++) {
+			const int i = frontier[head];
+			const int x = i % size.x;
+			const int y = (i / size.x) % size.y;
+			const int z = i / (size.x * size.y);
+			for (const auto &d : dirs6) {
+				const int nx = x + d[0], ny = y + d[1], nz = z + d[2];
+				if (!_inside(nx, ny, nz)) {
+					continue;
+				}
+				const int n = _index(nx, ny, nz);
+				if (r[n] != 0 && label[n] == -1) {
+					label[n] = label[i];
+					Part &part = parts[label[i]];
+					part.voxels++;
+					part.lo = part.lo.min(Vector3i(nx, ny, nz));
+					part.hi = part.hi.max(Vector3i(nx, ny, nz));
+					frontier.push_back(n);
+				}
+			}
+		}
+	}
 	for (int start = 0; start < total; start++) {
-		if (r[start] == 0 || label[start] != -1) {
+		if (r[start] == 0 || label[start] != -1 || (pass == 0 && !solid(start))) {
 			continue;
 		}
 		const int id = parts.size();
@@ -168,20 +204,20 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor) {
 			part.on_floor = part.on_floor || y == 0;
 			part.lo = part.lo.min(Vector3i(x, y, z));
 			part.hi = part.hi.max(Vector3i(x, y, z));
-			static const int dirs[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
-			for (const auto &d : dirs) {
+			for (const auto &d : dirs6) {
 				const int nx = x + d[0], ny = y + d[1], nz = z + d[2];
 				if (!_inside(nx, ny, nz)) {
 					continue;
 				}
 				const int n = _index(nx, ny, nz);
-				if (r[n] != 0 && label[n] == -1) {
+				if (r[n] != 0 && label[n] == -1 && (pass == 1 || solid(n))) {
 					label[n] = id;
 					stack.push_back(n);
 				}
 			}
 		}
 		parts.push_back(part);
+	}
 	}
 	if (parts.size() == 0) {
 		return out;
@@ -567,7 +603,7 @@ void GKVoxelGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_empty"), &GKVoxelGrid::is_empty);
 	ClassDB::bind_method(D_METHOD("count_by_material"), &GKVoxelGrid::count_by_material);
 	ClassDB::bind_method(D_METHOD("remove_sphere", "center", "radius", "max_hardness", "hardness"), &GKVoxelGrid::remove_sphere);
-	ClassDB::bind_method(D_METHOD("split_loose", "anchor_floor"), &GKVoxelGrid::split_loose);
+	ClassDB::bind_method(D_METHOD("split_loose", "anchor_floor", "solid"), &GKVoxelGrid::split_loose, DEFVAL(PackedByteArray()));
 	ClassDB::bind_method(D_METHOD("get_solid_bounds"), &GKVoxelGrid::get_solid_bounds);
 	ClassDB::bind_method(D_METHOD("mass_properties", "density"), &GKVoxelGrid::mass_properties);
 	ClassDB::bind_method(D_METHOD("build_mesh", "colors"), &GKVoxelGrid::build_mesh);

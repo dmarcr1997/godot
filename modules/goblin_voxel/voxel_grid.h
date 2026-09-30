@@ -67,7 +67,10 @@ public:
 	// Splits off the parts no longer connected (6-neighbour) to what holds the object up: with
 	// p_anchor_floor, voxels in the bottom layer (y = 0); otherwise the largest part. The split parts
 	// are removed from this grid and returned as [{"grid": GKVoxelGrid (cropped), "offset": Vector3i}].
-	TypedArray<Dictionary> split_loose(bool p_anchor_floor);
+	// With p_solid (a flag per material), only solid voxels hold things together: parts are found through
+	// solid voxels, and each non-solid voxel (leaves) goes with the solid part it grows from (nearest
+	// through other leaves); leaves touching no wood are a part of their own.
+	TypedArray<Dictionary> split_loose(bool p_anchor_floor, const PackedByteArray &p_solid = PackedByteArray());
 
 	// Mass, centre of mass and rotational inertia (diagonal, about the centre, grid axes) from a density
 	// per material in kg/m^3: {"mass": float, "center": Vector3, "inertia": Vector3}. Mass 0 when empty.
