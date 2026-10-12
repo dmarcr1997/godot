@@ -7,6 +7,7 @@
 #pragma once
 
 #include "core/object/ref_counted.h"
+#include "core/templates/local_vector.h"
 #include "core/variant/typed_array.h"
 #include "scene/resources/mesh.h"
 
@@ -19,6 +20,16 @@ class GKVoxelGrid : public RefCounted {
 	Vector3i size;
 	real_t voxel_size = 0.25;
 	Vector<uint8_t> cells;
+	// The box of voxels changed since take_dirty() was last called (inclusive), if `dirty`.
+	Vector3i dirty_lo;
+	Vector3i dirty_hi;
+	bool dirty = false;
+
+	_FORCE_INLINE_ void _touch(const Vector3i &p_lo, const Vector3i &p_hi) {
+		dirty_lo = dirty ? dirty_lo.min(p_lo) : p_lo;
+		dirty_hi = dirty ? dirty_hi.max(p_hi) : p_hi;
+		dirty = true;
+	}
 
 	_FORCE_INLINE_ int _index(int p_x, int p_y, int p_z) const { return p_x + size.x * (p_y + size.y * p_z); }
 	_FORCE_INLINE_ bool _inside(int p_x, int p_y, int p_z) const {
@@ -27,10 +38,14 @@ class GKVoxelGrid : public RefCounted {
 	_FORCE_INLINE_ uint8_t _at(int p_x, int p_y, int p_z) const {
 		return _inside(p_x, p_y, p_z) ? cells[_index(p_x, p_y, p_z)] : 0;
 	}
-	// Greedy quads over all faces between solid and empty. With p_by_material, faces of different
-	// materials don't merge. Calls p_emit(corners[4], normal, material) for each quad.
+	// Greedy quads over the faces between solid and empty of the voxels in [p_from, p_to): a face belongs
+	// to its solid voxel, so the regions of a grid split into blocks give every face exactly once, and
+	// what lies outside the region still hides faces. With p_by_material, faces of different materials
+	// don't merge. Calls p_emit(corners[4], normal, material) for each quad.
+	// The cells (indices, in the order found) of the biggest part that reaches the floor.
+	void _standing_cells(const PackedByteArray &p_solid, LocalVector<int32_t> &r_cells) const;
 	template <typename F>
-	void _greedy_quads(bool p_by_material, F p_emit) const;
+	void _greedy_quads(bool p_by_material, const Vector3i &p_from, const Vector3i &p_to, F p_emit) const;
 
 protected:
 	static void _bind_methods();
@@ -72,6 +87,16 @@ public:
 	// through other leaves); leaves touching no wood are a part of their own.
 	TypedArray<Dictionary> split_loose(bool p_anchor_floor, const PackedByteArray &p_solid = PackedByteArray());
 
+	// What a standing structure stands on: its main body is the biggest part (6-neighbour, through solid
+	// voxels only when p_solid is given) that reaches the floor (y = 0). Returns {"voxels": how many it
+	// has (0: nothing stands), "columns": Array of Vector2i (x, z) where it meets the floor, "com": Vector3
+	// (grid-local, the mean of its voxel centres), "centre": Vector2 (grid-local x, z metres, the middle
+	// of its columns)}.
+	Dictionary standing_body(const PackedByteArray &p_solid = PackedByteArray()) const;
+	// Takes that main body out of the grid: {"grid": GKVoxelGrid (cropped), "offset": Vector3i}, or an
+	// empty dictionary if nothing stands. (A structure toppling: its body becomes a falling piece.)
+	Dictionary take_standing_body(const PackedByteArray &p_solid = PackedByteArray());
+
 	// Mass, centre of mass and rotational inertia (diagonal, about the centre, grid axes) from a density
 	// per material in kg/m^3: {"mass": float, "center": Vector3, "inertia": Vector3}. Mass 0 when empty.
 	Dictionary mass_properties(const PackedFloat32Array &p_density) const;
@@ -83,6 +108,13 @@ public:
 	Ref<ArrayMesh> build_mesh(const PackedColorArray &p_colors) const;
 	// Surface triangles for a ConcavePolygonShape3D (static objects).
 	PackedVector3Array build_collision_faces() const;
+	// The same for the voxels in [p_from, p_to) only (positions stay grid-local): an object kept as blocks
+	// rebuilds just the blocks a break touched.
+	Ref<ArrayMesh> build_mesh_region(const PackedColorArray &p_colors, const Vector3i &p_from, const Vector3i &p_to) const;
+	PackedVector3Array build_collision_faces_region(const Vector3i &p_from, const Vector3i &p_to) const;
+	// The box of voxels changed since the last call, as [lowest, highest] (Vector3i, inclusive), or an
+	// empty array if nothing changed. Every call that writes voxels widens it; reading it clears it.
+	Array take_dirty();
 	// Solid space as few boxes as greedily found (for moving pieces, which can't use concave shapes).
 	// With p_solid (a flag per material), materials flagged 0 (leaves) get no boxes.
 	TypedArray<AABB> build_boxes(const PackedByteArray &p_solid = PackedByteArray()) const;

@@ -15,6 +15,8 @@ void GKVoxelGrid::create(const Vector3i &p_size) {
 	size = p_size;
 	cells.resize(size.x * size.y * size.z);
 	cells.fill(0);
+	dirty = false;
+	_touch(Vector3i(), size - Vector3i(1, 1, 1));
 }
 
 int GKVoxelGrid::get_voxel(const Vector3i &p_pos) const {
@@ -24,6 +26,7 @@ int GKVoxelGrid::get_voxel(const Vector3i &p_pos) const {
 void GKVoxelGrid::set_voxel(const Vector3i &p_pos, int p_material) {
 	if (_inside(p_pos.x, p_pos.y, p_pos.z)) {
 		cells.write[_index(p_pos.x, p_pos.y, p_pos.z)] = (uint8_t)CLAMP(p_material, 0, 255);
+		_touch(p_pos, p_pos);
 	}
 }
 
@@ -38,6 +41,10 @@ Vector3 GKVoxelGrid::voxel_center(const Vector3i &p_pos) const {
 void GKVoxelGrid::fill_box(const Vector3i &p_from, const Vector3i &p_to, int p_material) {
 	const Vector3i lo = p_from.min(p_to).max(Vector3i());
 	const Vector3i hi = p_from.max(p_to).min(size - Vector3i(1, 1, 1));
+	if (lo.x > hi.x || lo.y > hi.y || lo.z > hi.z) {
+		return;
+	}
+	_touch(lo, hi);
 	uint8_t *w = cells.ptrw();
 	for (int z = lo.z; z <= hi.z; z++) {
 		for (int y = lo.y; y <= hi.y; y++) {
@@ -61,6 +68,10 @@ void GKVoxelGrid::fill_line(const Vector3 &p_from, const Vector3 &p_to, real_t p
 	const Vector3i hi = voxel_at(p_from.max(p_to) + Vector3(r_max, r_max, r_max)).min(size - Vector3i(1, 1, 1));
 	const Vector3 seg = p_to - p_from;
 	const real_t seg_len2 = seg.length_squared();
+	if (lo.x > hi.x || lo.y > hi.y || lo.z > hi.z) {
+		return;
+	}
+	_touch(lo, hi);
 	uint8_t *w = cells.ptrw();
 	for (int z = lo.z; z <= hi.z; z++) {
 		for (int y = lo.y; y <= hi.y; y++) {
@@ -118,6 +129,7 @@ Dictionary GKVoxelGrid::remove_sphere(const Vector3 &p_center, real_t p_radius, 
 				if (hardness <= p_max_hardness) {
 					counts[cell]++;
 					cell = 0;
+					_touch(Vector3i(x, y, z), Vector3i(x, y, z));
 				}
 			}
 		}
@@ -243,6 +255,7 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor, const Packe
 		piece.instantiate();
 		piece->voxel_size = voxel_size;
 		piece->create(part.hi - part.lo + Vector3i(1, 1, 1));
+		_touch(part.lo, part.hi);
 		uint8_t *pw = piece->cells.ptrw();
 		for (int z = part.lo.z; z <= part.hi.z; z++) {
 			for (int y = part.lo.y; y <= part.hi.y; y++) {
@@ -260,6 +273,108 @@ TypedArray<Dictionary> GKVoxelGrid::split_loose(bool p_anchor_floor, const Packe
 		d["offset"] = part.lo;
 		out.push_back(d);
 	}
+	return out;
+}
+
+void GKVoxelGrid::_standing_cells(const PackedByteArray &p_solid, LocalVector<int32_t> &r_cells) const {
+	r_cells.clear();
+	const uint8_t *r = cells.ptr();
+	const bool masked = !p_solid.is_empty();
+	auto holds = [&](int p_index) {
+		const uint8_t m = r[p_index];
+		return m != 0 && (!masked || (m < p_solid.size() && p_solid[m] != 0));
+	};
+	LocalVector<uint8_t> seen;
+	seen.resize(cells.size());
+	memset(seen.ptr(), 0, seen.size());
+	LocalVector<int32_t> part;
+	// The neighbours in the order the game's own search used: +x, -x, +y, -y, -z, +z.
+	const int step[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
+	for (int z = 0; z < size.z; z++) {
+		for (int x = 0; x < size.x; x++) {
+			const int start = _index(x, 0, z);
+			if (seen[start] || !holds(start)) {
+				continue;
+			}
+			part.clear();
+			part.push_back(start);
+			seen[start] = 1;
+			for (uint32_t i = 0; i < part.size(); i++) {
+				const int c = part[i];
+				const int cx = c % size.x;
+				const int cy = (c / size.x) % size.y;
+				const int cz = c / (size.x * size.y);
+				for (int d = 0; d < 6; d++) {
+					const int nx = cx + step[d][0];
+					const int ny = cy + step[d][1];
+					const int nz = cz + step[d][2];
+					if (!_inside(nx, ny, nz)) {
+						continue;
+					}
+					const int n = _index(nx, ny, nz);
+					if (!seen[n] && holds(n)) {
+						seen[n] = 1;
+						part.push_back(n);
+					}
+				}
+			}
+			if (part.size() > r_cells.size()) {
+				r_cells = part;
+			}
+		}
+	}
+}
+
+Dictionary GKVoxelGrid::standing_body(const PackedByteArray &p_solid) const {
+	LocalVector<int32_t> body;
+	_standing_cells(p_solid, body);
+	Dictionary out;
+	TypedArray<Vector2i> columns;
+	Vector3 sum;
+	Vector2 centre;
+	for (const int32_t c : body) {
+		const Vector3i v(c % size.x, (c / size.x) % size.y, c / (size.x * size.y));
+		sum += voxel_center(v);
+		if (v.y == 0) {
+			columns.push_back(Vector2i(v.x, v.z));
+			centre += (Vector2(v.x, v.z) + Vector2(0.5, 0.5)) * voxel_size;
+		}
+	}
+	out["voxels"] = (int)body.size();
+	out["columns"] = columns;
+	out["com"] = body.is_empty() ? Vector3() : sum / body.size();
+	out["centre"] = columns.is_empty() ? Vector2() : centre / columns.size();
+	return out;
+}
+
+Dictionary GKVoxelGrid::take_standing_body(const PackedByteArray &p_solid) {
+	LocalVector<int32_t> body;
+	_standing_cells(p_solid, body);
+	Dictionary out;
+	if (body.is_empty()) {
+		return out;
+	}
+	Vector3i lo(size);
+	Vector3i hi(-1, -1, -1);
+	for (const int32_t c : body) {
+		const Vector3i v(c % size.x, (c / size.x) % size.y, c / (size.x * size.y));
+		lo = lo.min(v);
+		hi = hi.max(v);
+	}
+	Ref<GKVoxelGrid> piece;
+	piece.instantiate();
+	piece->voxel_size = voxel_size;
+	piece->create(hi - lo + Vector3i(1, 1, 1));
+	uint8_t *pw = piece->cells.ptrw();
+	uint8_t *w = cells.ptrw();
+	for (const int32_t c : body) {
+		const Vector3i v(c % size.x, (c / size.x) % size.y, c / (size.x * size.y));
+		pw[piece->_index(v.x - lo.x, v.y - lo.y, v.z - lo.z)] = w[c];
+		w[c] = 0;
+	}
+	_touch(lo, hi);
+	out["grid"] = piece;
+	out["offset"] = lo;
 	return out;
 }
 
@@ -329,8 +444,31 @@ AABB GKVoxelGrid::get_solid_bounds() const {
 }
 
 template <typename F>
-void GKVoxelGrid::_greedy_quads(bool p_by_material, F p_emit) const {
-	const int dims[3] = { size.x, size.y, size.z };
+void GKVoxelGrid::_greedy_quads(bool p_by_material, const Vector3i &p_from, const Vector3i &p_to, F p_emit) const {
+	const Vector3i from = p_from.max(Vector3i());
+	const Vector3i to = p_to.min(size);
+	if (from.x >= to.x || from.y >= to.y || from.z >= to.z) {
+		return;
+	}
+	const int lo[3] = { from.x, from.y, from.z };
+	const int dims[3] = { to.x - from.x, to.y - from.y, to.z - from.z };
+	// An empty region has no faces of its own (a felled tree leaves most of its blocks empty).
+	bool any = false;
+	const uint8_t *r = cells.ptr();
+	for (int z = from.z; z < to.z && !any; z++) {
+		for (int y = from.y; y < to.y && !any; y++) {
+			const uint8_t *row = r + _index(from.x, y, z);
+			for (int x = 0; x < dims[0]; x++) {
+				if (row[x] != 0) {
+					any = true;
+					break;
+				}
+			}
+		}
+	}
+	if (!any) {
+		return;
+	}
 	LocalVector<int> mask;
 	for (int d = 0; d < 3; d++) {
 		const int u = (d + 1) % 3;
@@ -339,15 +477,18 @@ void GKVoxelGrid::_greedy_quads(bool p_by_material, F p_emit) const {
 		int q[3] = { 0, 0, 0 };
 		q[d] = 1;
 		mask.resize(dims[u] * dims[v]);
-		for (x[d] = -1; x[d] < dims[d];) {
+		for (x[d] = lo[d] - 1; x[d] < lo[d] + dims[d];) {
 			// Faces between layer x[d] and x[d] + 1: positive when the solid side is below (normal +d).
+			// Only faces whose solid voxel is inside the region are this region's.
+			const bool a_in = x[d] >= lo[d];
+			const bool b_in = x[d] + 1 < lo[d] + dims[d];
 			int n = 0;
-			for (x[v] = 0; x[v] < dims[v]; x[v]++) {
-				for (x[u] = 0; x[u] < dims[u]; x[u]++) {
+			for (x[v] = lo[v]; x[v] < lo[v] + dims[v]; x[v]++) {
+				for (x[u] = lo[u]; x[u] < lo[u] + dims[u]; x[u]++) {
 					const int a = _at(x[0], x[1], x[2]);
 					const int b = _at(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
 					int m = 0;
-					if ((a != 0) != (b != 0)) {
+					if ((a != 0) != (b != 0) && (a != 0 ? a_in : b_in)) {
 						const int mat = p_by_material ? (a != 0 ? a : b) : 1;
 						m = a != 0 ? mat : -mat;
 					}
@@ -380,8 +521,8 @@ void GKVoxelGrid::_greedy_quads(bool p_by_material, F p_emit) const {
 							h++;
 						}
 					}
-					x[u] = i;
-					x[v] = j;
+					x[u] = lo[u] + i;
+					x[v] = lo[v] + j;
 					const Vector3 base(x[0], x[1], x[2]);
 					Vector3 du;
 					Vector3 dv;
@@ -414,11 +555,29 @@ static void _front_order(const Vector3 p_in[4], const Vector3 &p_normal, Vector3
 }
 
 Ref<ArrayMesh> GKVoxelGrid::build_mesh(const PackedColorArray &p_colors) const {
+	return build_mesh_region(p_colors, Vector3i(), size);
+}
+
+PackedVector3Array GKVoxelGrid::build_collision_faces() const {
+	return build_collision_faces_region(Vector3i(), size);
+}
+
+Array GKVoxelGrid::take_dirty() {
+	Array out;
+	if (dirty) {
+		out.push_back(dirty_lo);
+		out.push_back(dirty_hi);
+		dirty = false;
+	}
+	return out;
+}
+
+Ref<ArrayMesh> GKVoxelGrid::build_mesh_region(const PackedColorArray &p_colors, const Vector3i &p_from, const Vector3i &p_to) const {
 	PackedVector3Array verts;
 	PackedVector3Array normals;
 	PackedColorArray colors;
 	PackedInt32Array indices;
-	_greedy_quads(true, [&](const Vector3 p_corners[4], const Vector3 &p_normal, int p_material) {
+	_greedy_quads(true, p_from, p_to, [&](const Vector3 p_corners[4], const Vector3 &p_normal, int p_material) {
 		Vector3 c[4];
 		_front_order(p_corners, p_normal, c);
 		const int first = verts.size();
@@ -448,9 +607,9 @@ Ref<ArrayMesh> GKVoxelGrid::build_mesh(const PackedColorArray &p_colors) const {
 	return mesh;
 }
 
-PackedVector3Array GKVoxelGrid::build_collision_faces() const {
+PackedVector3Array GKVoxelGrid::build_collision_faces_region(const Vector3i &p_from, const Vector3i &p_to) const {
 	PackedVector3Array faces;
-	_greedy_quads(false, [&](const Vector3 p_corners[4], const Vector3 &p_normal, int p_material) {
+	_greedy_quads(false, p_from, p_to, [&](const Vector3 p_corners[4], const Vector3 &p_normal, int p_material) {
 		Vector3 c[4];
 		_front_order(p_corners, p_normal, c);
 		const int tri[6] = { 0, 1, 2, 0, 2, 3 };
@@ -475,6 +634,7 @@ Dictionary GKVoxelGrid::remove_below(const Plane &p_plane, int p_max_hardness, c
 				if (hardness <= p_max_hardness) {
 					counts[cell]++;
 					cell = 0;
+					_touch(Vector3i(x, y, z), Vector3i(x, y, z));
 				}
 			}
 		}
@@ -612,6 +772,11 @@ void GKVoxelGrid::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("mass_properties", "density"), &GKVoxelGrid::mass_properties);
 	ClassDB::bind_method(D_METHOD("build_mesh", "colors"), &GKVoxelGrid::build_mesh);
 	ClassDB::bind_method(D_METHOD("build_collision_faces"), &GKVoxelGrid::build_collision_faces);
+	ClassDB::bind_method(D_METHOD("build_mesh_region", "colors", "from", "to"), &GKVoxelGrid::build_mesh_region);
+	ClassDB::bind_method(D_METHOD("build_collision_faces_region", "from", "to"), &GKVoxelGrid::build_collision_faces_region);
+	ClassDB::bind_method(D_METHOD("take_dirty"), &GKVoxelGrid::take_dirty);
+	ClassDB::bind_method(D_METHOD("standing_body", "solid"), &GKVoxelGrid::standing_body, DEFVAL(PackedByteArray()));
+	ClassDB::bind_method(D_METHOD("take_standing_body", "solid"), &GKVoxelGrid::take_standing_body, DEFVAL(PackedByteArray()));
 	ClassDB::bind_method(D_METHOD("build_boxes", "solid"), &GKVoxelGrid::build_boxes, DEFVAL(PackedByteArray()));
 	ClassDB::bind_method(D_METHOD("remove_below", "plane", "max_hardness", "hardness"), &GKVoxelGrid::remove_below);
 	ClassDB::bind_method(D_METHOD("to_text"), &GKVoxelGrid::to_text);
